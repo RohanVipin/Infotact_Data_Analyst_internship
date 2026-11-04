@@ -1,0 +1,2 @@
+"""Event validation module."""
+

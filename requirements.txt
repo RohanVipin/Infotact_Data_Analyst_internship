@@ -1,0 +1,3 @@
+# Runtime dependencies for AtmoSync IoT Sensor Simulator (Task A - Part 1)
+PyYAML>=6.0.1
+
