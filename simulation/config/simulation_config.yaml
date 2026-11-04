@@ -1,0 +1,53 @@
+# ==============================================================================
+# AtmoSync IoT Sensor Simulator Configuration (Task A - Part 1)
+# ==============================================================================
+# NOTE: The official project specifications do not prescribe official sensor
+# operating thresholds or measurement units.
+# - All sensor limits below default to null (unconfirmed).
+# - All measurement units ('celsius', 'percent', 'm/s^2') are strictly provisional
+#   examples and must NOT be treated as approved business requirements.
+# - No arbitrary thresholds or units should be hardcoded.
+# ==============================================================================
+
+simulation:
+  # Simulation execution cycle interval in seconds (must be a positive finite number)
+  interval_seconds: 1.0
+
+  # Optional random seed for deterministic and reproducible test runs
+  # Set to an integer (e.g., 42) for reproducible runs, or null for non-deterministic execution
+  random_seed: null
+
+containers:
+  # Configured shipping container identifiers (must contain unique, non-empty strings)
+  - "CONTAINER_001"
+  - "CONTAINER_002"
+  - "CONTAINER_003"
+
+sensors:
+  # Temperature sensor configuration
+  temperature:
+    enabled: true
+    # Provisional unit (unconfirmed; configurable, not an official project standard)
+    unit: "celsius"
+    # Unconfirmed operating limits: set to null until officially agreed
+    # When specified, min_value must be strictly less than max_value
+    min_value: null
+    max_value: null
+
+  # Humidity sensor configuration
+  humidity:
+    enabled: true
+    # Provisional unit (unconfirmed; configurable, not an official project standard)
+    unit: "percent"
+    # Unconfirmed operating limits: set to null until officially agreed
+    min_value: null
+    max_value: null
+
+  # Vibration sensor configuration
+  vibration:
+    enabled: true
+    # Provisional unit (unconfirmed; configurable, not an official project standard)
+    unit: "m/s^2"
+    # Unconfirmed operating limits: set to null until officially agreed
+    min_value: null
+    max_value: null
