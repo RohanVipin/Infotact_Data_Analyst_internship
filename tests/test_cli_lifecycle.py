@@ -123,6 +123,33 @@ class TestCliLifecycleExecution:
 
         assert code == EXIT_FAILURE
 
+    def test_delivery_failure_in_both_mode_returns_exit_failure(self, tmp_path: Path) -> None:
+        """Requirement: When Kafka delivery fails in both mode, CLI returns EXIT_FAILURE due to PARTIAL_FAILURE."""
+        jsonl_path = tmp_path / "cli_partial.jsonl"
+        cfg = create_mock_app_config()
+
+        mock_producer = MagicMock()
+        mock_producer.is_closed = False
+        mock_producer.flush.return_value = 0
+        mock_producer.close.return_value = 0
+        mock_stats = MagicMock()
+        mock_stats.delivered = 0
+        mock_stats.failed = 6
+        mock_stats.pending = 0
+        mock_producer.stats = mock_stats
+
+        with patch("simulation.cli.ConfigLoader.load", return_value=cfg):
+            with patch("simulation.output.sink.SensorEventKafkaProducer", return_value=mock_producer):
+                code = main([
+                    "-c", "dummy_config.yaml",
+                    "-n", "1",
+                    "-m", "both",
+                    "--jsonl-path", str(jsonl_path),
+                ])
+
+        assert code == EXIT_FAILURE
+        assert jsonl_path.exists()
+
 
 class TestCliSignalHandlingAndGracefulShutdown:
     """Tests graceful OS signal handling, cleanup, and handler restoration."""

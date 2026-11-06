@@ -44,7 +44,7 @@ class RunnerMetrics:
         kafka_delivery_acknowledged: Kafka messages confirmed delivered by broker (or None if no Kafka sink).
         kafka_delivery_failed: Kafka messages reported failed by broker (or None if no Kafka sink).
         kafka_pending: Kafka messages enqueued but awaiting broker ack (or None if no Kafka sink).
-        status: Execution status ('INITIALIZED', 'RUNNING', 'COMPLETED', 'FAILED', 'STOPPED').
+        status: Execution status ('INITIALIZED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILURE', 'FAILED', 'STOPPED').
         start_time: ISO-8601 UTC timestamp of execution start (or None).
         end_time: ISO-8601 UTC timestamp of execution end (or None).
         duration_seconds: Elapsed wall-clock execution time in seconds.
@@ -230,11 +230,71 @@ class SimulationRunner:
         pending = 0
         for st in stats_objects:
             if isinstance(st, PublishingStats) or hasattr(st, "delivered"):
-                acknowledged += getattr(st, "delivered", 0)
-                failed += getattr(st, "failed", 0)
-                pending += getattr(st, "pending", 0)
+                d = getattr(st, "delivered", 0)
+                f = getattr(st, "failed", 0)
+                p = getattr(st, "pending", 0)
+                if isinstance(d, int):
+                    acknowledged += d
+                if isinstance(f, int):
+                    failed += f
+                if isinstance(p, int):
+                    pending += p
 
         return acknowledged, failed, pending
+
+    def _compute_final_status(
+        self,
+        max_cycles: Optional[int],
+        in_flight_exc: Optional[BaseException],
+    ) -> str:
+        """Evaluate the honest, comprehensive status of the completed simulation run.
+
+        Accurately distinguishes between:
+        - COMPLETED: All simulation cycles succeeded, all synchronous sink dispatches succeeded,
+          and all asynchronous broker deliveries confirmed with zero failures.
+        - PARTIAL_FAILURE: Simulation completed cycles, but one or more sink dispatches failed,
+          or asynchronous broker delivery experienced failures or unacknowledged timeouts.
+        - FAILED: Execution aborted due to unhandled exceptions, zero cycles/dispatches succeeded,
+          or all required deliveries failed completely.
+        - STOPPED: Execution was requested to halt gracefully before completing all cycles.
+        """
+        if in_flight_exc is not None:
+            return "FAILED"
+
+        cycles_executed = self._simulation_cycles_completed + self._simulation_cycles_failed
+        ack, fail, pend = self._collect_kafka_metrics()
+
+        has_cycle_failure = self._simulation_cycles_failed > 0
+        has_dispatch_failure = self._sink_dispatch_failed > 0
+        has_kafka_failure = (fail is not None and fail > 0) or (pend is not None and pend > 0)
+
+        any_failure = has_cycle_failure or has_dispatch_failure or has_kafka_failure
+
+        was_stopped_early = (self._stopped or self._engine.is_stopped) and (
+            max_cycles is None or cycles_executed < max_cycles
+        )
+
+        if was_stopped_early:
+            if any_failure:
+                return "PARTIAL_FAILURE"
+            return "STOPPED"
+
+        if not any_failure:
+            return "COMPLETED"
+
+        # Determine complete failure (FAILED) vs partial failure (PARTIAL_FAILURE)
+        is_kafka_only = isinstance(self._output_sink, KafkaSink) or (
+            hasattr(self._output_sink, "producer") and not hasattr(self._output_sink, "sinks")
+        )
+
+        if self._simulation_cycles_completed == 0:
+            return "FAILED"
+        if self._sink_dispatch_succeeded == 0:
+            return "FAILED"
+        if is_kafka_only and (ack is not None and ack == 0 and (fail or 0) > 0):
+            return "FAILED"
+
+        return "PARTIAL_FAILURE"
 
     def get_metrics(self) -> RunnerMetrics:
         """Return an immutable snapshot of current execution metrics."""
@@ -370,18 +430,11 @@ class SimulationRunner:
             raise
         finally:
             self._end_time = datetime.now(timezone.utc)
-            cycles_executed = self._simulation_cycles_completed + self._simulation_cycles_failed
-            if in_flight_exc is None:
-                if self._stopped or self._engine.is_stopped:
-                    if max_cycles is None or cycles_executed < max_cycles:
-                        self._status = "STOPPED"
-                    else:
-                        self._status = "FAILED" if (self._simulation_cycles_failed > 0 or self._sink_dispatch_failed > 0) else "COMPLETED"
-                else:
-                    self._status = "FAILED" if (self._simulation_cycles_failed > 0 or self._sink_dispatch_failed > 0) else "COMPLETED"
-
-            # Execute guaranteed shutdown/flushing
+            # 1. Execute guaranteed shutdown/flushing FIRST so all sinks drain delivery callbacks
             self._shutdown(in_flight_exc=in_flight_exc)
+
+            # 2. Evaluate comprehensive final status AFTER shutdown completes flushing
+            self._status = self._compute_final_status(max_cycles=max_cycles, in_flight_exc=in_flight_exc)
 
         return self.get_metrics()
 
