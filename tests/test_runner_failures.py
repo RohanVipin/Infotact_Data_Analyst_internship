@@ -61,9 +61,16 @@ class MockOutputSink(OutputSink):
 class MockKafkaProducer:
     """Mock Kafka producer with configurable failure modes."""
 
-    def __init__(self, fail_on_produce: Optional[Exception] = None) -> None:
+    def __init__(
+        self,
+        fail_on_produce: Optional[Exception] = None,
+        simulate_delivery_failure: bool = False,
+        simulate_pending_count: int = 0,
+    ) -> None:
         self.stats = PublishingStats()
         self.fail_on_produce = fail_on_produce
+        self.simulate_delivery_failure = simulate_delivery_failure
+        self.simulate_pending_count = simulate_pending_count
         self.flush_called = 0
         self.flush_error: Optional[Exception] = None
 
@@ -76,7 +83,11 @@ class MockKafkaProducer:
         self.flush_called += 1
         if self.flush_error:
             raise self.flush_error
-        return 0
+        # Drain attempts into delivery receipts
+        pending = self.stats.pending - self.simulate_pending_count
+        for _ in range(max(0, pending)):
+            self.stats.record_delivery(success=not self.simulate_delivery_failure)
+        return self.simulate_pending_count
 
     def close(self, timeout=None, raise_on_timeout=False) -> int:
         return 0
@@ -290,3 +301,58 @@ class TestSimulationRunnerFailures:
         assert metrics.simulation_cycles_failed == 1
         assert metrics.simulation_cycles_completed == 0
         assert metrics.status == "FAILED"
+
+    def test_kafka_delivery_failure_in_kafka_only_mode_sets_failed_status(self) -> None:
+        """Requirement: When all Kafka message deliveries time out/fail in Kafka mode, status is FAILED."""
+        engine = create_test_engine()
+        mock_producer = MockKafkaProducer(simulate_delivery_failure=True)
+        kafka_sink = KafkaSink(producer=mock_producer)  # type: ignore
+        runner = SimulationRunner(engine=engine, output_sink=kafka_sink)
+
+        metrics = runner.run(max_cycles=1)
+
+        assert metrics.simulation_cycles_completed == 1
+        assert metrics.simulation_cycles_failed == 0
+        assert metrics.events_generated == 6
+        assert metrics.sink_dispatch_succeeded == 6
+        assert metrics.sink_dispatch_failed == 0
+        assert metrics.kafka_delivery_acknowledged == 0
+        assert metrics.kafka_delivery_failed == 6
+        assert metrics.kafka_pending == 0
+        assert metrics.status == "FAILED"
+
+    def test_kafka_delivery_failure_in_composite_both_mode_sets_partial_failure_status(self) -> None:
+        """Requirement: When JSONL succeeds but Kafka delivery fails in both mode, status is PARTIAL_FAILURE."""
+        engine = create_test_engine()
+        jsonl_sink = MockOutputSink()
+        mock_producer = MockKafkaProducer(simulate_delivery_failure=True)
+        kafka_sink = KafkaSink(producer=mock_producer)  # type: ignore
+
+        composite = CompositeOutputSink([jsonl_sink, kafka_sink])
+        runner = SimulationRunner(engine=engine, output_sink=composite)
+
+        metrics = runner.run(max_cycles=1)
+
+        assert metrics.simulation_cycles_completed == 1
+        assert metrics.simulation_cycles_failed == 0
+        assert metrics.events_generated == 6
+        assert len(jsonl_sink.events) == 6
+        assert metrics.kafka_delivery_acknowledged == 0
+        assert metrics.kafka_delivery_failed == 6
+        assert metrics.kafka_pending == 0
+        assert metrics.status == "PARTIAL_FAILURE"
+
+    def test_kafka_pending_messages_after_flush_sets_partial_failure_status(self) -> None:
+        """Requirement: When messages remain unacknowledged after flush, status is PARTIAL_FAILURE."""
+        engine = create_test_engine()
+        mock_producer = MockKafkaProducer(simulate_pending_count=2)
+        kafka_sink = KafkaSink(producer=mock_producer)  # type: ignore
+        runner = SimulationRunner(engine=engine, output_sink=kafka_sink)
+
+        metrics = runner.run(max_cycles=1)
+
+        assert metrics.simulation_cycles_completed == 1
+        assert metrics.events_generated == 6
+        assert metrics.kafka_delivery_acknowledged == 4
+        assert metrics.kafka_pending == 2
+        assert metrics.status == "PARTIAL_FAILURE"

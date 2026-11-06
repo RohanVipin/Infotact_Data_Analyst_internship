@@ -132,6 +132,8 @@ class SignalContext:
             targets = [signal.SIGINT]
             if hasattr(signal, "SIGTERM"):
                 targets.append(signal.SIGTERM)
+            if hasattr(signal, "SIGBREAK"):
+                targets.append(signal.SIGBREAK)
 
             for sig in targets:
                 try:
